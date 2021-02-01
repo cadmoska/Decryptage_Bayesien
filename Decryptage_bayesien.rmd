@@ -1,0 +1,155 @@
+---
+title: "Inférence bayésienne et méthodes MCMC"
+author: "Cadmos KAHALE ABDOU"
+date: "16/05/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(stringr)
+library(dplyr)
+```
+
+L'objectif de ce devoir est de décrypter un message en français, crypté par permutation d'un alphabet de 30 éléments, regroupant les 26 lettres de l'alphabet, ainsi que les virgules, les points, les apostrophes et les espaces. On comprend que chacun de ces éléments a été envoyé sur un nouveau en utilisant la permutation $f_*$ que l'on essaye de retrouver.
+
+Pour ce faire, nous allons mettre en place l'algorithme de Metropolis-Hastings, dont les chaines de Markov qui nous permet de résoudre le problème voulu sont celles qui vivent dans l'espace de toutes les clés de décryptage possibles. La fonction de score, qui nous permet de mettre en place l'algorithme est celle donnée par la vraisemblance:
+$$L(X|f) = \prod^K_{i,j = 1}M(i,j)^{f_X(i,j)} $$
+
+Où $M(i, j)$ est le nombre de transitions de i à j (pour chaque élément i et j de l’alphabet) observées par
+ailleurs dans la langue Française. On peut proposer de construire cette matrice en se référant à un long livre en français et de compter chacune des transitions.
+
+$f_X(i, j)$ est le nombre de transitions de i à j dans la décryption du message X par $f$, avec X une chaine de markov vivant dans l'espace des décryptages possibles.
+
+K en l'occurence est égal à 30, c'est le cardinal des éléments de notre alphabet.
+
+
+Intuitivement, on peut voir que le score va être plus élevé lorsque les fréquences des paires dans le texte à décrypter sont proches de celles du texte de référence qui nous a permis de construire la matrice de transition.
+
+L'algorithme que nous allons implémenter suivra le plan suivant :
+
+* On choisit un état initial, qui sera la clé de décryption initiale. En l'occurence on prendra le décryptage par identité, donc la première de nos clés sera l'alphabet sans permutation.
+
+* On répète selon les itérations voulues les étapes suivantes :
+
+  + On propose une nouvelle clé de décryptage Y en effectuant deux substitutions dans notre alphabet selon des lois uniformes. En effet, on garde la possibilité de permuter la lettre avec elle même, et le produit de deux tirages uniformes suit une loi de densité symétrique, ce qui est indispensable pour le succès de l'algorithme.
+  
+  + On tire une variable aléatoire u suivant une loi uniforme dans $[0,1 ]$ indépendamment des autres variables.
+  
+  + Si $u < \frac{L(Y|f)}{L(X|F)}$, avec X la clé initiale, on accepte la nouvelle clé. Sinon on en tire une nouvelle en gardant X.
+
+
+On commence donc par charger les données fournies:
+```{r}
+
+
+
+# Codes d'imports
+
+transition_matrix <- read.table("https://papayoun.github.io/courses/2020_monte_carlo/enonces_td/transition_matrix.txt", 
+                                sep = ";", header = FALSE) %>% 
+  as.matrix()
+
+texte_crypte <- read_file("monfichier.txt")
+
+my_alphabet <- c(LETTERS, "'", ",", ".", " ")
+
+```
+
+On commence alors par coder une fonction qui nous permet d'obtenir une nouvelle clé, en permutant deux éléments de notre alphabet suivant à chaque fois une loi uniforme :
+```{r}
+#donne une nouvelle clé selon une permutation suivant le produit de deux lois uniformes
+newkey <- function(oldkey){
+  id1 <- sample(1:30, 1)
+  id2 <- sample(1:30, 1)
+  stock <- oldkey[id1]
+  oldkey[id1] <- oldkey[id2]
+  oldkey[id2] <- stock
+  return(oldkey)
+  
+}
+```
+
+Ensuite on code une fonction qui nous permet de déchiffrer un code quelconque avec une clé donnée :
+```{r}
+#déchifre le message selon une clé donnée
+decipher <- function(key, message){
+  message_split <- unlist(str_split(message, ""))
+  deciphered_message <- message_split
+  for(i in 1:(length(deciphered_message)-1)){
+    deciphered_message[i] <- key[which(my_alphabet == deciphered_message[i])]
+  }
+  return(unlist(deciphered_message))
+}
+
+```
+
+Ensuite, il nous faut un code capable de compter le nombre de transition entre chaques lettres pour un code crypté donné. cela nous permettra d'obtenir les puissances $f_X(i,j)$ dans la fonction de score. Pour se faire, on commence par coder une fonction qui nous permet simplement de compter le nombres de transitions entre deux lettres données :
+
+```{r}
+#donne le nombre de passage de lettre1 à lettre2
+f_key <- function(letter1,letter2,message,key){
+  deciphered_message <- decipher(key, message)
+  l1 <- which(deciphered_message == letter1)
+  l2 <- which(deciphered_message == letter2)
+  l2 <- l2 -1
+  compteur <- length(which(l1 %in% l2))
+  return(compteur)
+}
+```
+
+Ensuite, l'objectif étant de mettre en puissance le bon compteur de transition avec le $M(i,j)$ de la matrice de transition, on établit la matrice des compteurs de transitions. On remarquera qu'il est beaucoup plus optimal de compter les transitions existantes dans le message en mettant toutes celles qui ne sont pas relevées à 0, plutôt que de compter chacune des $30\times 30$ possibilités. On obtient la fonction suivante :
+```{r}
+
+#donne la matrice avec le nombre de passages d'une lettre à l'autre
+matrix_f2 <- function(key){
+  M <- matrix(0,30,30)
+  deciphered_message <- decipher(key,texte_crypte)
+  for(i in 1:(length(deciphered_message)-1)){
+    M[which(my_alphabet == deciphered_message[i]),which(my_alphabet == deciphered_message[i+1])] = M[which(my_alphabet == deciphered_message[i]),which(my_alphabet == deciphered_message[i+1])] +1}
+  return(M)}
+```
+
+On mets ces deux codes ensembles pour obtenir le score, ou la vraisemblance, pour une clé de décryptage donnée (autrement dit une chaine de Markov vivant dans l'espace des clés de décryptage):
+
+```{r}
+#calcule la vraisemblance
+vraisemblance <- function(key){
+  vrais <- (log(transition_matrix+1))*(matrix_f2(key)+1)
+  return(sum(vrais))
+}
+
+```
+
+Au final, nous mettons toutes ces fonctions ensembles pour établir l'algorithme de Metropolis-Hastings établie au début du rapport. On effectuera 10 000 itérations, et l'algorithme ne prendra pas plus de deux minutes à compiler. Les résultats seront la plupart du temps très bons, mis à part quelque fois, ou on ne convergera pas vers la bonne loi. Par précaution on donne le texte retrouvé qui semble provenir du Seigneur des Anneaux de Tolkien :
+
+"MAIS HIER SOIR JE VOUS AI PARLE DE SAURON LE GRAND, LE SEIGNEUR TENEBREUX. LES RUMEURS QUE VOUS AVEZ ENTENDUES SONT VRAIES, IL S'EST EN EFFET LEVE DE NOUVEAU, IL A QUITTE SON REPAIRE DE LA FORET NOIRE POUR RETOURNER A SON ANCIENNE PLACE FORTE DE LA TOUR SOMBRE DE MORDOR. CE NOM, MEME VOUS AUTRES HOBBITS, VOUS EN AVEZ ENTENDU PARLER, COMME UNE OMBRE EN MARGE DES VIEILLES HISTOIRES. TOUJOURS APRES UNE DEFAITE ET UN REPIT, L'OMBRE PREND UNE AUTRE FORME ET CROIT DE NOUVEAU. J'AURAIS BIEN VOULU QUE CELA N'EUT PAS A SE PASSER DE MON TEMPS, DIT FRODON. MOI AUSSI, DIT GANDALF, COMME TOUS CEUX QUI VIVENT POUR VOIR DE TELS TEMPS. MAIS LA DECISION NE LEUR APPARTIENT PAS. TOUT CE QUE NOUS AVONS A DECIDER, C'EST CE QUE NOUS DEVONS FAIRE DU TEMPS QUI NOUS EST DONNE. ET DEJA, FRODON, NOTRE TEMPS COMMENCE A PARAITRE NOIR. L'ENNEMI DEVIENT RAPIDEMENT TRES PUISSANT. SES PLANS SONT LOIN D'ETRE MURS, JE PENSE, MAIS ILS MURISSENT. NOUS SERONS A RUDE EPREUVE. NOUS DEVRIONS ETRE A TRES RUDE EPREUVE, MEME SANS CETTE TERRIBLE OCCURRENCE."
+
+le code nous permettant de retrouver ce texte est le suivant:
+```{r}
+mcmc_algorithm <- function(iter, message, initial_key){
+  sub_key <- initial_key
+  for(n in 1:iter){
+    new_key <- newkey(sub_key)
+    u <- runif(1,0,1)
+    if(log(u) < vraisemblance(new_key)-vraisemblance(sub_key)){
+      sub_key <- new_key
+    }
+  }
+  d_text <- decipher(key = sub_key, texte_crypte)
+  T <- " "
+  for(i in 1:length(d_text)){
+    T <- str_glue(T,d_text[i])
+  }
+  print(T)
+}
+```
+On choisira de prendre le log du test d'acceptation pour faciliter le calcul pour la machine. Autrement on atteint l'infini machine et l'algorithme ne peut pas être implanté.
+
+On le fait tourner pour obtenir :
+```{r, cache = TRUE}
+mcmc_algorithm(10000, texte_crypte, my_alphabet)
+```
+
